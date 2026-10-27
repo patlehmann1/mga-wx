@@ -28,20 +28,30 @@ mga-wx --version
 
 | Key | Action |
 |---|---|
+| `tab` / `shift+tab` | switch location |
 | `r` | refresh now |
 | `t` | cycle theme (dark, synthwave, cobalt2) |
 | `q` | quit |
 
 ## Location
 
-By default, distances are measured from the center of ZIP 31069 (Perry, GA). For your exact location, create `~/.config/mga-wx/config.toml`:
+By default, distances are measured from the center of ZIP 31069 (Perry, GA). For your exact location, or to watch more than one place, create `~/.config/mga-wx/config.toml`:
 
 ```toml
+theme = "dark"
+
+[[locations]]
 label = "Perry, GA"
 lat = 32.44
 lon = -83.75
-theme = "dark"
+
+[[locations]]
+label = "Macon, GA"
+lat = 32.84
+lon = -83.63
 ```
+
+Each location gets a tab. A tab shows `!!` when a warning covers that location or comes within 10 miles, and the bell rings for new warnings at any of them.
 
 The Census geocoder turns a street address into coordinates:
 https://geocoding.geo.census.gov/geocoder/locations/onelineaddress

@@ -19,8 +19,8 @@ const fixture = `{"features":[
 	 "geometry":{"type":"Polygon","coordinates":[[[-82,32],[-81,32],[-81,33],[-82,33],[-82,32]]]}}
 ]}`
 
-func TestHighestAt(t *testing.T) {
-	var o outlook
+func TestRiskAt(t *testing.T) {
+	var o Outlook
 	if err := json.Unmarshal([]byte(fixture), &o); err != nil {
 		t.Fatal(err)
 	}
@@ -35,11 +35,11 @@ func TestHighestAt(t *testing.T) {
 		{"none", geo.Point{Lat: 40, Lon: -90}, ""},
 	}
 	for _, c := range cases {
-		if got := highestAt(o, c.p); got.Label != c.want {
+		if got := o.RiskAt(c.p); got.Label != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got.Label, c.want)
 		}
 	}
-	if r := highestAt(o, cases[0].p); r.Name != "Slight Risk" || r.Fill != "#F6F67F" {
+	if r := o.RiskAt(cases[0].p); r.Name != "Slight Risk" || r.Fill != "#F6F67F" {
 		t.Errorf("core risk = %+v, want name and fill carried through", r)
 	}
 }

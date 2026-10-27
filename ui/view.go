@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -71,30 +73,24 @@ func innerWidth(boxWidth int) int {
 }
 
 func (m Model) header(th Theme) string {
-	cursor := " "
-	if m.cursorOn {
-		cursor = lipgloss.NewStyle().Foreground(th.Primary).Render("█")
-	}
-	left := lipgloss.NewStyle().Foreground(th.Primary).Render("> ") +
-		lipgloss.NewStyle().Foreground(th.Fg).Bold(true).Render(strings.ToUpper(m.cfg.Label)+" WX") +
-		" " + cursor
-
 	label := lipgloss.NewStyle().Foreground(th.Muted).Render("SPC DAY 1 ")
+	risk := m.sites[m.active].risk
 	var badge string
 	switch {
-	case m.risk == nil:
+	case risk == nil:
 		badge = lipgloss.NewStyle().Foreground(th.Muted).Render("[ ... ]")
-	case m.risk.Label == "":
+	case risk.Label == "":
 		badge = lipgloss.NewStyle().Foreground(th.Muted).Render("[ NONE ]")
 	default:
 		badge = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#1A140F")).
-			Background(lipgloss.Color(m.risk.Fill)).
+			Background(lipgloss.Color(risk.Fill)).
 			Bold(true).
-			Render(" " + m.risk.Label + " ")
+			Render(" " + risk.Label + " ")
 	}
 	right := label + badge
 
+	left := ansi.Truncate(m.tabs(th), innerWidth(m.width)-lipgloss.Width(right)-1, "…")
 	gap := max(1, innerWidth(m.width)-lipgloss.Width(left)-lipgloss.Width(right))
 	return lipgloss.NewStyle().
 		Border(pixelBorder).
@@ -104,12 +100,38 @@ func (m Model) header(th Theme) string {
 		Render(left + strings.Repeat(" ", gap) + right)
 }
 
+// tabs renders one tab per location: the active one as a "> LABEL" prompt
+// with a blinking cursor, the rest muted, with "!!" on any tab that has a
+// warning affecting it.
+func (m Model) tabs(th Theme) string {
+	var parts []string
+	for i, s := range m.sites {
+		name := strings.ToUpper(s.label)
+		var flag string
+		if slices.ContainsFunc(s.alerts, affects) {
+			flag = lipgloss.NewStyle().Foreground(th.Danger).Bold(true).Render(" !!")
+		}
+		if i != m.active {
+			parts = append(parts, lipgloss.NewStyle().Foreground(th.Muted).Render(name)+flag)
+			continue
+		}
+		cursor := " "
+		if m.cursorOn {
+			cursor = lipgloss.NewStyle().Foreground(th.Primary).Render("█")
+		}
+		parts = append(parts, lipgloss.NewStyle().Foreground(th.Primary).Render("> ")+
+			lipgloss.NewStyle().Foreground(th.Fg).Bold(true).Render(name)+flag+" "+cursor)
+	}
+	return strings.Join(parts, "   ")
+}
+
 func (m Model) nowBody(th Theme) string {
 	muted := lipgloss.NewStyle().Foreground(th.Muted)
-	if len(m.periods) == 0 {
+	periods := m.sites[m.active].periods
+	if len(periods) == 0 {
 		return muted.Render("loading forecast...")
 	}
-	p := m.periods[0]
+	p := periods[0]
 
 	temp := lipgloss.NewStyle().Foreground(th.Fg).Bold(true).Render(fmt.Sprintf("%d°F", p.Temperature))
 	details := lipgloss.JoinVertical(lipgloss.Left,
@@ -125,19 +147,20 @@ func (m Model) nowBody(th Theme) string {
 
 func (m Model) alertsBody(th Theme, boxWidth int) string {
 	muted := lipgloss.NewStyle().Foreground(th.Muted)
-	if m.loc == nil || m.updated.IsZero() {
+	alerts := m.sites[m.active].alerts
+	if m.updated.IsZero() {
 		return muted.Render("checking alerts...")
 	}
-	if len(m.alerts) == 0 {
+	if len(alerts) == 0 {
 		return lipgloss.NewStyle().Foreground(th.Fg).Render("All clear.") + "\n" +
 			muted.Render(fmt.Sprintf("No alerts within %d mi.", alertRadiusMi))
 	}
 
 	width := innerWidth(boxWidth)
 	var lines []string
-	for i, a := range m.alerts {
+	for i, a := range alerts {
 		if i == maxAlerts {
-			lines = append(lines, muted.Render(fmt.Sprintf("+%d more", len(m.alerts)-maxAlerts)))
+			lines = append(lines, muted.Render(fmt.Sprintf("+%d more", len(alerts)-maxAlerts)))
 			break
 		}
 		marker, color := "·  ", th.Muted
@@ -177,7 +200,7 @@ func (m Model) hourlyBody(th Theme) string {
 	muted := lipgloss.NewStyle().Foreground(th.Muted)
 	cutoff := time.Now().Add(-time.Hour)
 	var cols []string
-	for _, p := range m.periods {
+	for _, p := range m.sites[m.active].periods {
 		if len(cols) == m.hourCount() {
 			break
 		}
@@ -210,21 +233,36 @@ func hourLabel(t time.Time) string {
 func (m Model) footer(th Theme) string {
 	muted := lipgloss.NewStyle().Foreground(th.Muted)
 	key := lipgloss.NewStyle().Foreground(th.Primary)
-	left := " " + key.Render("[r]") + muted.Render(" refresh  ") +
+	left := " "
+	if len(m.sites) > 1 {
+		left += key.Render("[tab]") + muted.Render(" location  ")
+	}
+	left += key.Render("[r]") + muted.Render(" refresh  ") +
 		key.Render("[t]") + muted.Render(" theme: "+themes[m.theme].Name+"  ") +
 		key.Render("[q]") + muted.Render(" quit")
 
 	var right string
-	for _, src := range []string{"location", "alerts", "outlook", "forecast"} {
-		if err := m.errs[src]; err != nil {
+	failed := false
+	for _, src := range slices.Sorted(maps.Keys(m.errs)) {
+		if m.errs[src] != nil {
 			right = lipgloss.NewStyle().Foreground(th.Danger).Render(src + " fetch failed ")
+			failed = true
 			break
 		}
 	}
-	if right == "" && !m.updated.IsZero() {
+	if !failed && !m.updated.IsZero() {
 		right = muted.Render("updated " + m.updated.Format("3:04 PM") + " ")
+	}
+	// On narrow terminals keep whichever side matters more: a fetch error
+	// beats the key hints, and the key hints beat the update time.
+	if lipgloss.Width(left)+lipgloss.Width(right)+1 > m.width {
+		if failed {
+			left = " "
+		} else {
+			right = ""
+		}
 	}
 
 	gap := max(1, m.width-lipgloss.Width(left)-lipgloss.Width(right))
-	return left + strings.Repeat(" ", gap) + right
+	return ansi.Truncate(left+strings.Repeat(" ", gap)+right, m.width, "")
 }

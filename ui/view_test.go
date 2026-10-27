@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
@@ -13,14 +14,20 @@ import (
 	"github.com/patlehmann1/mga-wx/spc"
 )
 
+var twoSites = config.Config{Locations: []config.Location{
+	config.Default.Locations[0],
+	{Label: "Lake Oconee", Lat: 33.4, Lon: -83.3},
+}}
+
 func populated(width int) Model {
-	m := New(config.Default)
+	m := New(twoSites)
 	m.width, m.height = width, 40
-	m.loc = &nws.Location{Zones: []string{"GAZ095", "GAC153"}}
-	m.risk = &spc.Risk{Label: "SLGT", Name: "Slight Risk", Fill: "#F6F67F"}
+	s := &m.sites[0]
+	s.loc = &nws.Location{Zones: []string{"GAZ095", "GAC153"}}
+	s.risk = &spc.Risk{Label: "SLGT", Name: "Slight Risk", Fill: "#F6F67F"}
 	m.updated = time.Date(2026, 10, 26, 13, 12, 0, 0, time.Local)
 	ends := time.Now().Add(45 * time.Minute)
-	m.alerts = []nws.NearbyAlert{
+	s.alerts = []nws.NearbyAlert{
 		{Alert: nws.Alert{ID: "1", Event: "Tornado Warning", Ends: ends}, Kind: nws.Warning, Miles: 6.2, Direction: "W"},
 		{Alert: nws.Alert{ID: "2", Event: "Severe Thunderstorm Watch", Ends: ends}, Kind: nws.Watch, Inside: true},
 		{Alert: nws.Alert{ID: "3", Event: "Wind Advisory", Ends: ends}, Kind: nws.Advisory, InZone: true},
@@ -28,7 +35,7 @@ func populated(width int) Model {
 	icons := []string{"skc", "sct", "tsra_hi", "tsra", "rain_showers", "ovc", "fog", "bkn", "snow", "few", "sct", "skc", "ovc"}
 	start := time.Now().Truncate(time.Hour)
 	for i, icon := range icons {
-		m.periods = append(m.periods, nws.Period{
+		s.periods = append(s.periods, nws.Period{
 			Start:       start.Add(time.Duration(i) * time.Hour),
 			Temperature: 72 - i,
 			WindSpeed:   "10 mph",
@@ -59,7 +66,9 @@ func TestViewFitsWidth(t *testing.T) {
 func TestViewContent(t *testing.T) {
 	view := ansi.Strip(populated(120).View())
 	for _, want := range []string{
-		"PERRY, GA WX",
+		"> PERRY, GA",
+		"LAKE OCONEE",
+		"[tab] location",
 		"SLGT",
 		"!! TORNADO WARNING",
 		"6 mi W",
@@ -77,6 +86,9 @@ func TestViewContent(t *testing.T) {
 func TestViewLoading(t *testing.T) {
 	m := New(config.Default)
 	m.width = 100
+	if strings.Contains(ansi.Strip(m.View()), "[tab]") {
+		t.Error("single location shouldn't show the tab key")
+	}
 	view := ansi.Strip(m.View())
 	for _, want := range []string{"[ ... ]", "loading forecast...", "checking alerts..."} {
 		if !strings.Contains(view, want) {
@@ -136,8 +148,46 @@ func TestBellOnlyForNewNearbyWarnings(t *testing.T) {
 	}
 
 	far := New(config.Default)
-	far.alerts = []nws.NearbyAlert{{Alert: nws.Alert{ID: "x"}, Kind: nws.Warning, Miles: 30, Direction: "N"}}
+	far.sites[0].alerts = []nws.NearbyAlert{{Alert: nws.Alert{ID: "x"}, Kind: nws.Warning, Miles: 30, Direction: "N"}}
 	if far.bellForNewWarnings() != nil {
 		t.Fatal("bell rang for a warning 30 mi away")
+	}
+}
+
+func TestTabsSwitchAndFlagWarnings(t *testing.T) {
+	m := populated(120)
+	m.sites[1].alerts = []nws.NearbyAlert{{Alert: nws.Alert{ID: "lake", Event: "Tornado Warning"}, Kind: nws.Warning, Inside: true}}
+	m.sites[0].alerts = m.sites[0].alerts[1:]
+
+	header := ansi.Strip(m.header(themes[0]))
+	if !strings.Contains(header, "LAKE OCONEE !!") || strings.Contains(header, "PERRY, GA !!") {
+		t.Fatalf("only the lake tab should be flagged: %q", header)
+	}
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	view := ansi.Strip(next.View())
+	if !strings.Contains(view, "> LAKE OCONEE") || !strings.Contains(view, "YOU'RE INSIDE") {
+		t.Fatalf("tab should switch to the lake site:\n%s", view)
+	}
+	if !strings.Contains(view, "[ ... ]") {
+		t.Errorf("lake has no outlook yet; badge should be loading")
+	}
+
+	back, _ := next.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if back.(Model).active != 0 {
+		t.Errorf("shift+tab should wrap back to the first site")
+	}
+}
+
+func TestBellPerSite(t *testing.T) {
+	m := New(twoSites)
+	warning := nws.NearbyAlert{Alert: nws.Alert{ID: "w"}, Kind: nws.Warning, InZone: true}
+	m.sites[0].alerts = []nws.NearbyAlert{warning}
+	if m.bellForNewWarnings() == nil {
+		t.Fatal("want bell for warning at first site")
+	}
+	m.sites[1].alerts = []nws.NearbyAlert{warning}
+	if m.bellForNewWarnings() == nil {
+		t.Fatal("same warning newly covering the second site should ring again")
 	}
 }

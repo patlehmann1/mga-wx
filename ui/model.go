@@ -23,18 +23,20 @@ const (
 
 type (
 	locationMsg struct {
-		loc nws.Location
-		err error
+		site int
+		loc  nws.Location
+		err  error
 	}
 	alertsMsg struct {
 		alerts []nws.Alert
 		err    error
 	}
-	riskMsg struct {
-		risk spc.Risk
-		err  error
+	outlookMsg struct {
+		outlook spc.Outlook
+		err     error
 	}
 	hourlyMsg struct {
+		site    int
 		periods []nws.Period
 		err     error
 	}
@@ -43,83 +45,98 @@ type (
 	slowTickMsg   struct{}
 )
 
-type Model struct {
-	cfg   config.Config
-	home  geo.Point
-	theme int
-
+type site struct {
+	label   string
+	home    geo.Point
 	loc     *nws.Location
 	alerts  []nws.NearbyAlert
 	risk    *spc.Risk
 	periods []nws.Period
-	updated time.Time
-	errs    map[string]error
-	rung    map[string]bool
+}
+
+type Model struct {
+	sites  []site
+	active int
+	theme  int
+
+	allAlerts []nws.Alert
+	updated   time.Time
+	errs      map[string]error
+	rung      map[string]bool
 
 	cursorOn      bool
 	width, height int
 }
 
 func New(cfg config.Config) Model {
-	return Model{
-		cfg:   cfg,
-		home:  geo.Point{Lat: cfg.Lat, Lon: cfg.Lon},
+	m := Model{
 		theme: themeIndex(cfg.Theme),
 		errs:  map[string]error{},
 		rung:  map[string]bool{},
 	}
+	for _, l := range cfg.Locations {
+		m.sites = append(m.sites, site{label: l.Label, home: geo.Point{Lat: l.Lat, Lon: l.Lon}})
+	}
+	return m
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(
-		m.fetchLocation(),
-		m.fetchRisk(),
+	cmds := []tea.Cmd{
+		fetchAlerts,
+		fetchOutlook,
 		tick(blinkEvery, blinkMsg{}),
 		tick(alertsEvery, alertsTickMsg{}),
 		tick(outlookEvery, slowTickMsg{}),
-	)
+	}
+	for i := range m.sites {
+		cmds = append(cmds, m.fetchLocation(i))
+	}
+	return tea.Batch(cmds...)
 }
 
 func tick(d time.Duration, msg tea.Msg) tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg { return msg })
 }
 
-func (m Model) fetchLocation() tea.Cmd {
+func (m Model) fetchLocation(i int) tea.Cmd {
+	home := m.sites[i].home
 	return func() tea.Msg {
-		loc, err := nws.FetchLocation(m.home)
-		return locationMsg{loc, err}
+		loc, err := nws.FetchLocation(home)
+		return locationMsg{i, loc, err}
 	}
 }
 
-func (m Model) fetchAlerts() tea.Cmd {
-	return func() tea.Msg {
-		alerts, err := nws.FetchAlerts()
-		return alertsMsg{alerts, err}
-	}
+func fetchAlerts() tea.Msg {
+	alerts, err := nws.FetchAlerts()
+	return alertsMsg{alerts, err}
 }
 
-func (m Model) fetchRisk() tea.Cmd {
-	return func() tea.Msg {
-		risk, err := spc.FetchDay1(m.home)
-		return riskMsg{risk, err}
-	}
+func fetchOutlook() tea.Msg {
+	outlook, err := spc.FetchDay1()
+	return outlookMsg{outlook, err}
 }
 
-func (m Model) fetchHourly() tea.Cmd {
-	url := m.loc.ForecastHourly
+func (m Model) fetchHourly(i int) tea.Cmd {
+	url := m.sites[i].loc.ForecastHourly
 	return func() tea.Msg {
 		periods, err := nws.FetchHourly(url)
-		return hourlyMsg{periods, err}
+		return hourlyMsg{i, periods, err}
 	}
 }
 
-// refresh refetches everything, starting over from the location lookup if
-// that hasn't succeeded yet.
-func (m Model) refresh() tea.Cmd {
-	if m.loc == nil {
-		return tea.Batch(m.fetchLocation(), m.fetchRisk())
+// perSite fetches each site's forecast, or its location first if that
+// lookup hasn't succeeded yet.
+func (m Model) perSite(withHourly bool) []tea.Cmd {
+	var cmds []tea.Cmd
+	for i, s := range m.sites {
+		switch {
+		case s.loc == nil:
+			cmds = append(cmds, m.fetchLocation(i))
+		case withHourly:
+			cmds = append(cmds, m.fetchHourly(i))
+		}
 	}
-	return tea.Batch(m.fetchAlerts(), m.fetchRisk(), m.fetchHourly())
+	return cmds
 }
 
 func ringBell() tea.Msg {
@@ -137,9 +154,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c", "esc":
 			return m, tea.Quit
 		case "r":
-			return m, m.refresh()
+			return m, tea.Batch(append(m.perSite(true), fetchAlerts, fetchOutlook)...)
 		case "t":
 			m.theme = (m.theme + 1) % len(themes)
+		case "tab", "right":
+			m.active = (m.active + 1) % len(m.sites)
+		case "shift+tab", "left":
+			m.active = (m.active + len(m.sites) - 1) % len(m.sites)
 		}
 
 	case blinkMsg:
@@ -147,60 +168,80 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tick(blinkEvery, blinkMsg{})
 
 	case alertsTickMsg:
-		next := tick(alertsEvery, alertsTickMsg{})
-		if m.loc == nil {
-			return m, tea.Batch(next, m.fetchLocation())
-		}
-		return m, tea.Batch(next, m.fetchAlerts())
+		cmds := append(m.perSite(false), tick(alertsEvery, alertsTickMsg{}), fetchAlerts)
+		return m, tea.Batch(cmds...)
 
 	case slowTickMsg:
-		cmds := []tea.Cmd{tick(outlookEvery, slowTickMsg{}), m.fetchRisk()}
-		if m.loc != nil {
-			cmds = append(cmds, m.fetchHourly())
-		}
+		cmds := append(m.perSite(true), tick(outlookEvery, slowTickMsg{}), fetchOutlook)
 		return m, tea.Batch(cmds...)
 
 	case locationMsg:
-		m.errs["location"] = msg.err
+		s := &m.sites[msg.site]
+		m.errs[s.label+" location"] = msg.err
 		if msg.err != nil {
 			return m, nil
 		}
-		m.loc = &msg.loc
-		return m, tea.Batch(m.fetchAlerts(), m.fetchHourly())
+		s.loc = &msg.loc
+		m.matchAlerts()
+		return m, tea.Batch(m.fetchHourly(msg.site), m.bellForNewWarnings())
 
 	case alertsMsg:
 		m.errs["alerts"] = msg.err
 		if msg.err != nil {
 			return m, nil
 		}
-		m.alerts = nws.Nearby(msg.alerts, m.home, m.loc.Zones, alertRadiusMi)
+		m.allAlerts = msg.alerts
 		m.updated = time.Now()
+		m.matchAlerts()
 		return m, m.bellForNewWarnings()
 
-	case riskMsg:
+	case outlookMsg:
 		m.errs["outlook"] = msg.err
 		if msg.err == nil {
-			m.risk = &msg.risk
+			for i := range m.sites {
+				risk := msg.outlook.RiskAt(m.sites[i].home)
+				m.sites[i].risk = &risk
+			}
 		}
 
 	case hourlyMsg:
-		m.errs["forecast"] = msg.err
+		s := &m.sites[msg.site]
+		m.errs[s.label+" forecast"] = msg.err
 		if msg.err == nil {
-			m.periods = msg.periods
+			s.periods = msg.periods
 		}
 	}
 	return m, nil
 }
 
+// matchAlerts filters the statewide alert list for each site. Zone matching
+// needs the site's NWS location, so sites still waiting on it only get
+// polygon matches.
+func (m Model) matchAlerts() {
+	for i := range m.sites {
+		s := &m.sites[i]
+		var zones []string
+		if s.loc != nil {
+			zones = s.loc.Zones
+		}
+		s.alerts = nws.Nearby(m.allAlerts, s.home, zones, alertRadiusMi)
+	}
+}
+
+func affects(a nws.NearbyAlert) bool {
+	return a.Kind == nws.Warning && (a.Inside || a.InZone || a.Miles <= bellRadiusMi)
+}
+
 func (m Model) bellForNewWarnings() tea.Cmd {
 	ring := false
-	for _, a := range m.alerts {
-		if m.rung[a.ID] {
-			continue
-		}
-		m.rung[a.ID] = true
-		if a.Kind == nws.Warning && (a.Inside || a.InZone || a.Miles <= bellRadiusMi) {
-			ring = true
+	for _, s := range m.sites {
+		for _, a := range s.alerts {
+			key := s.label + "|" + a.ID
+			if m.rung[key] {
+				continue
+			}
+			m.rung[key] = true
+			ring = ring || affects(a)
 		}
 	}
 	if ring {

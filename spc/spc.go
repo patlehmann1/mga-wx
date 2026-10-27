@@ -14,7 +14,7 @@ const day1URL = "https://www.spc.noaa.gov/products/outlook/day1otlk_cat.nolyr.ge
 
 var levels = []string{"TSTM", "MRGL", "SLGT", "ENH", "MDT", "HIGH"}
 
-// Risk is the SPC Day 1 categorical outlook at a point. A zero Risk means
+// Risk is the SPC Day 1 categorical risk at a point. A zero Risk means
 // no thunderstorms are forecast there.
 type Risk struct {
 	Label string
@@ -22,7 +22,8 @@ type Risk struct {
 	Fill  string
 }
 
-type outlook struct {
+// Outlook is the SPC Day 1 categorical outlook for the whole country.
+type Outlook struct {
 	Features []struct {
 		Geometry   geo.Geometry `json:"geometry"`
 		Properties struct {
@@ -35,23 +36,22 @@ type outlook struct {
 
 var httpClient = &http.Client{Timeout: 15 * time.Second}
 
-func FetchDay1(p geo.Point) (Risk, error) {
+func FetchDay1() (Outlook, error) {
 	resp, err := httpClient.Get(day1URL)
 	if err != nil {
-		return Risk{}, err
+		return Outlook{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return Risk{}, fmt.Errorf("SPC outlook returned %d", resp.StatusCode)
+		return Outlook{}, fmt.Errorf("SPC outlook returned %d", resp.StatusCode)
 	}
-	var o outlook
-	if err := json.NewDecoder(resp.Body).Decode(&o); err != nil {
-		return Risk{}, err
-	}
-	return highestAt(o, p), nil
+	var o Outlook
+	err = json.NewDecoder(resp.Body).Decode(&o)
+	return o, err
 }
 
-func highestAt(o outlook, p geo.Point) Risk {
+// RiskAt returns the highest risk level whose area contains p.
+func (o Outlook) RiskAt(p geo.Point) Risk {
 	var best Risk
 	for _, f := range o.Features {
 		pr := f.Properties
