@@ -2,6 +2,11 @@
 
 Severe weather for middle Georgia, in your terminal.
 
+<p>
+  <img src="docs/screenshot-synthwave.png" alt="mga-wx in the synthwave theme" width="49%">
+  <img src="docs/screenshot-cobalt2.png" alt="mga-wx in the cobalt2 theme" width="49%">
+</p>
+
 - Active NWS warnings, watches, and advisories within 60 miles, with distance and direction from you (or "YOU'RE INSIDE")
 - Today's SPC severe risk at your location
 - Current conditions and the next 12 hours, drawn as pixel art
