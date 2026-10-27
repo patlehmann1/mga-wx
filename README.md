@@ -9,10 +9,21 @@ Severe weather for middle Georgia, in your terminal.
 
 Alerts refresh every minute. The outlook and forecast refresh every 10 minutes.
 
+## Installation
+
+macOS or Linux, with Homebrew:
+
+```bash
+brew install patlehmann1/mga-wx/mga-wx
+```
+
+Or download a binary from the [latest release](https://github.com/patlehmann1/mga-wx/releases/latest).
+
 ## Usage
 
 ```bash
-go run .
+mga-wx              # start the dashboard
+mga-wx --version
 ```
 
 | Key | Action |
